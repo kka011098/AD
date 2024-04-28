@@ -1,0 +1,12 @@
+import numpy as np
+
+# Load the npz file
+data = np.load('/home/kka011098/Anomaly_detection/Data_to_run_AD/example_CMS_data.npz')
+
+# Extract the names array
+names = data['names']
+
+# Print the names
+print("Feature Names:")
+for name in names:
+    print(name)
