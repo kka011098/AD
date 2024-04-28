@@ -1,0 +1,68 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+from sklearn.ensemble import IsolationForest
+import os
+
+def load_npz_file(file_path):
+    data = np.load(file_path)
+    return data['data'], data['names']
+
+def perform_isolation_forest_anomaly_detection(data):
+    # Initialize Isolation Forest model
+    model = IsolationForest(contamination='auto', random_state=42)
+    # Fit the model to the data
+    model.fit(data)
+    # Predict anomaly scores
+    anomaly_scores = model.decision_function(data)
+    return anomaly_scores, model.predict(data)
+
+
+def save_npz_files(output_folder, data, column_names, is_anomalous):
+    # Create output directory if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+
+    anomalous_data = data[is_anomalous]
+    non_anomalous_data = data[~is_anomalous]
+    np.savez(output_folder + "/anomalous_data.npz", data=anomalous_data, names=column_names)
+    np.savez(output_folder + "/non_anomalous_data.npz", data=non_anomalous_data, names=column_names)
+
+
+def plot_data_to_pdf(data, is_anomalous, column_names, output_folder):
+    num_parameters = len(column_names)
+    num_samples = data.shape[0]
+
+    with PdfPages(output_folder + '/anomaly_detection_results.pdf') as pdf:
+        for param_index in range(num_parameters):
+            plt.figure(figsize=(8, 6))
+
+            plt.plot(data[:, param_index], label='Original Data')
+            plt.plot(data[is_anomalous, param_index], 'ro', label='Anomalous Data')
+            plt.plot(data[~is_anomalous, param_index], 'bo', label='Non-Anomalous Data')
+            plt.xlabel('Index')
+            plt.ylabel(column_names[param_index])
+            plt.legend()
+
+            plt.tight_layout()
+            pdf.savefig()
+            plt.close()
+
+def main():
+    # Path to the .npz file
+    npz_file_path = "/home/kka011098/Anomaly_detection/Data_to_run_AD/small_data3.npz"
+    output_folder = "/home/kka011098/Anomaly_detection/Output_data/Output_IF"
+
+    # Load data from .npz file
+    data, column_names = load_npz_file(npz_file_path)
+
+    # Perform Isolation Forest anomaly detection
+    anomaly_scores, is_anomalous = perform_isolation_forest_anomaly_detection(data)
+
+    # Save anomalous and non-anomalous data to .npz files
+    save_npz_files(output_folder, data, column_names, is_anomalous)
+
+    # Plot data to PDF
+    plot_data_to_pdf(data, is_anomalous, column_names, output_folder)
+
+if __name__ == "__main__":
+    main()

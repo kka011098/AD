@@ -1,0 +1,120 @@
+import numpy as np
+import os
+import argparse
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from keras.layers import Input, Dense
+from keras.models import Model
+from matplotlib.backends.backend_pdf import PdfPages
+import pandas as pd
+
+# Initialize file paths
+MODE1_DATA_FILE_PATH = "/home/kka011098/Anomaly_detection/Data_to_run_AD/small_data3.npz"
+MODE2_DATA_FILE_PATH = "/home/kka011098/Anomaly_detection/Data_to_run_AD/small_data3.npz"
+MODE_OUTPUT_FOLDER = "/home/kka011098/Anomaly_detection/Output data/Output_AE"
+
+def load_data(file_path):
+    data = np.load(file_path)
+    X = pd.DataFrame(data["data"], columns=data["names"])
+    return X
+
+def preprocess_data(X):
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    return X_scaled
+
+def define_autoencoder(input_dim, encoding_dim):
+    input_data = Input(shape=(input_dim,))
+    encoded = Dense(encoding_dim, activation='relu')(input_data)
+    decoded = Dense(input_dim, activation='sigmoid')(encoded)
+    autoencoder = Model(input_data, decoded)
+    autoencoder.compile(optimizer='adam', loss='mse')
+    return autoencoder
+
+def train_autoencoder(autoencoder, X_train, X_test, output_folder):
+    autoencoder.fit(X_train, X_train, epochs=50, batch_size=256, shuffle=True, validation_data=(X_test, X_test))
+    autoencoder.save(os.path.join(output_folder, "autoencoder_model.h5"))
+
+def detect_anomalies(autoencoder, X_test, output_folder):
+    reconstructed_data = autoencoder.predict(X_test)
+    reconstruction_errors = np.mean(np.square(X_test - reconstructed_data), axis=1)
+    threshold_outlier = np.percentile(reconstruction_errors, 90)
+    threshold_overdense = np.percentile(reconstruction_errors, 90)
+    
+    # Initialize anomalies and non-anomalies with the same shape as X_test
+    anomalies_outlier = np.zeros_like(X_test)
+    anomalies_overdense = np.zeros_like(X_test)
+    non_anomalies = np.zeros_like(X_test)
+    
+    # Update the cells corresponding to anomalies in the given dataset
+    for i in range(X_test.shape[0]):
+        for j in range(X_test.shape[1]):
+            if reconstruction_errors[i] > threshold_outlier:
+                anomalies_outlier[i, j] = X_test[i, j]
+            elif reconstruction_errors[i] > threshold_overdense:
+                anomalies_overdense[i, j] = X_test[i, j]
+            else:
+                non_anomalies[i, j] = X_test[i, j]
+    
+    return anomalies_outlier, anomalies_overdense, non_anomalies
+
+def save_results(output_folder, anomalies_outlier, anomalies_overdense, non_anomalies):
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+    np.savez(os.path.join(output_folder, "anomalous_data.npz"), outliers=anomalies_outlier)
+    np.savez(os.path.join(output_folder, "overdense_anomalous_data.npz"), overdense_anomalies=anomalies_overdense)
+    np.savez(os.path.join(output_folder, "non_anomalous_data.npz"), non_anomalies=non_anomalies)
+
+def generate_comparison_pdf(X, anomalies_outlier, anomalies_overdense, output_folder):
+    with PdfPages(os.path.join(output_folder, "comparison_plots.pdf")) as pdf:
+        num_columns = X.shape[1]
+        fig, axes = plt.subplots(num_columns, 1, figsize=(10, 5 * num_columns))
+
+        for i in range(num_columns):
+            axes[i].bar(range(len(X)), X.iloc[:, i], color='blue', label='Normal Data')
+            
+            # Plot outliers and overdense anomalies separately
+            outlier_indices = np.where(anomalies_outlier[:, i] != 0)[0]
+            axes[i].bar(outlier_indices, anomalies_outlier[:, i][outlier_indices], color='red', label='Outlier Anomalies')
+            
+            overdense_indices = np.where(anomalies_overdense[:, i] != 0)[0]
+            axes[i].bar(overdense_indices, anomalies_overdense[:, i][overdense_indices], color='orange', label='Overdense Anomalies')
+            
+            axes[i].set_title(f'Bar Plot (Column {i + 1})')
+            axes[i].legend()
+
+        pdf.savefig()
+        plt.close()
+
+
+def main(mode, data_file_path, output_folder):
+    X = load_data(data_file_path)
+    X_scaled = preprocess_data(X)
+    X_train, X_test = train_test_split(X_scaled, test_size=0.2, random_state=42)
+    input_dim = X_train.shape[1]
+    encoding_dim = 12  # Choose the size of the latent space
+    
+    if mode == "train":
+        autoencoder = define_autoencoder(input_dim, encoding_dim)
+        train_autoencoder(autoencoder, X_train, X_test, output_folder)
+    elif mode == "detect":
+        from keras.models import load_model
+        autoencoder = load_model(os.path.join(MODE_OUTPUT_FOLDER, "autoencoder_model.h5"))  # Assuming MODE_OUTPUT_FOLDER for loading model
+        anomalies_outlier, anomalies_overdense, non_anomalies = detect_anomalies(autoencoder, X_test, output_folder)
+        save_results(output_folder, anomalies_outlier, anomalies_overdense, non_anomalies)
+        generate_comparison_pdf(X, anomalies_outlier, anomalies_overdense, output_folder)
+    else:
+        print("Invalid mode. Please select either 'train' or 'detect'.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Anomaly detection using autoencoder")
+    parser.add_argument("--mode", type=str, choices=["train", "detect"], default="train",
+                        help="Mode selection: 'train' for training the autoencoder or 'detect' for detecting anomalies")
+    args = parser.parse_args()
+    if args.mode == "train":
+        if not os.path.exists(MODE_OUTPUT_FOLDER):
+            os.makedirs(MODE_OUTPUT_FOLDER)
+        main(args.mode, MODE1_DATA_FILE_PATH, MODE_OUTPUT_FOLDER)
+    elif args.mode == "detect":
+        main(args.mode, MODE2_DATA_FILE_PATH, MODE_OUTPUT_FOLDER)

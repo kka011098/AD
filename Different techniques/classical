@@ -1,0 +1,156 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.ensemble import IsolationForest
+from sklearn.svm import OneClassSVM
+from sklearn.metrics import silhouette_score
+from sklearn.model_selection import ParameterGrid
+from sklearn.utils import shuffle
+from matplotlib.backends.backend_pdf import PdfPages
+
+def load_dataset(npz_file):
+    data = np.load(npz_file)
+    X = data['data']
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    return X, X_scaled
+
+def estimate_param_ranges(X):
+    n_samples, n_features = X.shape
+
+    max_clusters = min(n_samples // 2, 10)
+    kmeans_params = {'n_clusters': list(range(2, max_clusters + 1))}
+
+    eps_values = [0.1, 0.5, 1.0, np.sqrt(n_features)]
+    min_samples_values = [5, 10, 15]
+    dbscan_params = {'eps': eps_values, 'min_samples': min_samples_values}
+
+    contamination_values = [0.05, 0.1, 0.15, min(0.1, n_samples / 1000)]
+    iso_forest_params = {'contamination': contamination_values}
+
+    nu_values = [0.01, 0.05, 0.1, min(0.1, n_samples / 1000)]
+    svm_params = {'nu': nu_values}
+
+    param_ranges = {
+        'KMeans': kmeans_params,
+        'DBSCAN': dbscan_params,
+        'IsolationForest': iso_forest_params,
+        'OneClassSVM': svm_params
+    }
+
+    return param_ranges
+
+def tune_parameters(algorithm, X, param_ranges):
+    best_score = -np.inf
+    best_params = None
+
+    param_grid = param_ranges.get(algorithm, {})
+    for params in ParameterGrid(param_grid):
+        if algorithm == 'KMeans':
+            model = KMeans(**params)
+            labels = model.fit_predict(X)
+            score = silhouette_score(X, labels)
+        elif algorithm == 'DBSCAN':
+            model = DBSCAN(**params)
+            labels = model.fit_predict(X)
+            if len(np.unique(labels)) < 2:
+                continue
+            score = silhouette_score(X, labels)
+        elif algorithm == 'IsolationForest':
+            model = IsolationForest(**params)
+            model.fit(X)
+            score = np.mean(model.score_samples(X))
+        elif algorithm == 'OneClassSVM':
+            model = OneClassSVM(**params)
+            model.fit(X)
+            score = np.mean(model.score_samples(X))
+
+        if score > best_score:
+            best_score = score
+            best_params = params
+
+    return best_params
+
+def apply_algorithm(algorithm, X, params):
+    if algorithm == 'KMeans':
+        model = KMeans(**params)
+        labels = model.fit_predict(X)
+        return labels
+    elif algorithm == 'DBSCAN':
+        model = DBSCAN(**params)
+        labels = model.fit_predict(X)
+        return labels
+    elif algorithm == 'IsolationForest':
+        model = IsolationForest(**params)
+        anomaly_scores = model.fit_predict(X)
+        return anomaly_scores
+    elif algorithm == 'OneClassSVM':
+        model = OneClassSVM(**params)
+        anomaly_scores = model.fit_predict(X)
+        return anomaly_scores
+
+def perform_anomaly_detection(X):
+    algorithms = ['KMeans', 'DBSCAN', 'IsolationForest', 'OneClassSVM']
+    results = {}
+    param_ranges = estimate_param_ranges(X)
+
+    for algo in algorithms:
+        best_params = tune_parameters(algo, X, param_ranges)
+        labels_or_scores = apply_algorithm(algo, X, best_params)
+        results[algo] = (labels_or_scores, best_params)
+
+    return results
+
+def perform_voting(results):
+    final_anomalies = np.zeros(len(results['KMeans'][0]), dtype=int)
+
+    for algo, (labels_or_scores, params) in results.items():
+        if algo == 'KMeans':
+            final_anomalies[labels_or_scores == np.argmin(np.bincount(labels_or_scores))] = 1
+        else:
+            final_anomalies[labels_or_scores == -1] = 1
+
+    return final_anomalies
+
+def plot_comparison(initial_data, anomalies_indices, non_anomalous_indices, feature_names, pdf_filename):
+    with PdfPages(pdf_filename) as pdf:
+        for i, feature_name in enumerate(feature_names):
+            plt.figure(figsize=(8, 6))
+            plt.plot(initial_data[:, i], label='Initial Data', color='blue')
+            plt.plot(anomalies_indices, initial_data[anomalies_indices, i], 'rx', label='Anomalies', alpha=0.5)
+            plt.plot(non_anomalous_indices, initial_data[non_anomalous_indices, i], 'go', label='Non-Anomalous', alpha=0.5)
+            plt.title(feature_name)
+            plt.legend()
+            pdf.savefig()
+            plt.close()
+
+def save_datasets(anomalies_data, non_anomalous_data, anomalies_file, non_anomalous_file):
+    np.savez(anomalies_file, data=anomalies_data)
+    np.savez(non_anomalous_file, data=non_anomalous_data)
+
+# Load dataset
+npz_file = 'Data_to_run_AD/small_data3.npz'  # Update with your dataset path
+initial_data, X = load_dataset(npz_file)
+
+# Shuffle the dataset to avoid bias in parameter tuning
+X = shuffle(X)
+
+# Perform iterative parameter tuning and anomaly detection
+results = perform_anomaly_detection(X)
+
+# Perform voting to determine final anomalies
+final_anomalies = perform_voting(results)
+
+# Get indices of anomalies and non-anomalous data points
+anomalies_indices = np.where(final_anomalies == 1)[0]
+non_anomalous_indices = np.where(final_anomalies == 0)[0]
+
+# Plot and save comparison graphs to a single PDF file
+feature_names = [f"Feature {i + 1}" for i in range(initial_data.shape[1])]
+plot_comparison(initial_data, anomalies_indices, non_anomalous_indices, feature_names, 'anomaly_detection_results.pdf')
+
+# Save anomalies and non-anomalous datasets to NPZ files
+anomalies_file = 'anomalies_dataset.npz'
+non_anomalous_file = 'non_anomalous_dataset.npz'
+save_datasets(initial_data[anomalies_indices], initial_data[non_anomalous_indices], anomalies_file, non_anomalous_file)

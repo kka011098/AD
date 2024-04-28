@@ -1,0 +1,117 @@
+import numpy as np
+import os
+import torch
+import torch.nn as nn
+from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import argparse
+
+MODE1_DATA_FILE_PATH = "/home/kka011098/Anomaly_detection/Data_to_run_AD/small_data3.npz"
+MODE2_DATA_FILE_PATH = "/home/kka011098/Anomaly_detection/Data_to_run_AD/small_data3.npz"
+MODE_OUTPUT_FOLDER = "/home/kka011098/Anomaly_detection/Output data/Output_angry"
+
+class Autoencoder(nn.Module):
+    def __init__(self, n_features, z_dim):
+        super(Autoencoder, self).__init__()
+        # Encoder
+        self.en1 = nn.Linear(n_features, 200, dtype=torch.float64)
+        self.en2 = nn.Linear(200, 100, dtype=torch.float64)
+        self.en3 = nn.Linear(100, 50, dtype=torch.float64)
+        self.en4 = nn.Linear(50, z_dim, dtype=torch.float64)
+        
+        # Decoder
+        self.de1 = nn.Linear(z_dim, 50, dtype=torch.float64)
+        self.de2 = nn.Linear(50, 100, dtype=torch.float64)
+        self.de3 = nn.Linear(100, 200, dtype=torch.float64)
+        self.de4 = nn.Linear(200, n_features, dtype=torch.float64)
+
+    def forward(self, x):
+        # Encoder
+        x_en1 = torch.relu(self.en1(x))
+        x_en2 = torch.relu(self.en2(x_en1))
+        x_en3 = torch.relu(self.en3(x_en2))
+        x_encoded = self.en4(x_en3)
+
+        # Decoder
+        x_de1 = torch.relu(self.de1(x_encoded))
+        x_de2 = torch.relu(self.de2(x_de1))
+        x_de3 = torch.relu(self.de3(x_de2))
+        x_decoded = torch.sigmoid(self.de4(x_de3))
+
+        return x_encoded, x_decoded
+
+def kmeans_clustering(data):
+    # Perform KMeans clustering
+    kmeans = KMeans(n_clusters=2, random_state=42)
+    kmeans.fit(data)
+    cluster_centers = kmeans.cluster_centers_
+    return cluster_centers
+
+def gmm_clustering(data):
+    # Perform Gaussian Mixture Model clustering
+    gmm = GaussianMixture(n_components=2, random_state=42)
+    gmm.fit(data)
+    cluster_centers = gmm.means_
+    return cluster_centers
+
+def calculate_distance_weighted_mean(data, encoded_result):
+    weights = np.linspace(0.1, 1, encoded_result.shape[1])
+    weighted_mean = np.sum(encoded_result * weights, axis=1) / np.sum(weights)
+    return weighted_mean
+
+def detect_anomalies(model, test_data):
+    encoded_data, decoded_data = model(torch.tensor(test_data, dtype=torch.float64))
+    
+    # Perform clustering on encoded data
+    kmeans_clusters = kmeans_clustering(encoded_data.detach().numpy())
+    gmm_clusters = gmm_clustering(encoded_data.detach().numpy())
+
+    # Calculate weighted mean of encoded data
+    weighted_mean_encoded = calculate_distance_weighted_mean(test_data, encoded_data.detach().numpy())
+    
+    # Calculate mean of decoded data
+    mean_decoded = np.mean(decoded_data.detach().numpy(), axis=1)
+
+    return kmeans_clusters, gmm_clusters, weighted_mean_encoded, mean_decoded
+
+def plot_results(train_data, test_data, kmeans_clusters, gmm_clusters, weighted_mean_encoded, mean_decoded, output_folder):
+    with PdfPages(os.path.join(output_folder, 'results.pdf')) as pdf:
+        # Plot clustering results
+        plt.figure(figsize=(12, 8))
+        for i in range(24):  # Assuming there are 24 features
+            plt.subplot(5, 5, i+1)
+            plt.scatter(train_data[:, i], train_data[:, i], c='blue', label='Original Data')
+            plt.scatter(kmeans_clusters[:, i], kmeans_clusters[:, i], c='green', label='KMeans Clustering')
+            plt.scatter(gmm_clusters[:, i], gmm_clusters[:, i], c='orange', label='GMM Clustering')
+            plt.axvline(weighted_mean_encoded[i], color='red', linestyle='--', label='Weighted Mean Encoded')
+            plt.axvline(mean_decoded[i], color='purple', linestyle='--', label='Mean Decoded')
+            plt.title(f'Feature {i+1}')
+            plt.legend()
+        pdf.savefig()
+        plt.close()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Anomaly Detection with Autoencoder")
+    parser.add_argument("--mode", type=str, help="Specify the mode (train or detect)")
+    args = parser.parse_args()
+
+    mode = args.mode
+
+    if mode == 'train':
+        data = np.load(MODE1_DATA_FILE_PATH)
+        train_data = data['data']
+        autoencoder_model = Autoencoder(train_data.shape[1], 32)
+        torch.save(autoencoder_model.state_dict(), os.path.join(MODE_OUTPUT_FOLDER, 'autoencoder_model.pt'))
+        print("Training completed. Model saved.")
+    elif mode == 'detect':
+        data = np.load(MODE2_DATA_FILE_PATH)
+        test_data = data['data']
+        autoencoder_model = Autoencoder(test_data.shape[1], 32)
+        autoencoder_model.load_state_dict(torch.load(os.path.join(MODE_OUTPUT_FOLDER, 'autoencoder_model.pt')))
+        kmeans_clusters, gmm_clusters, weighted_mean_encoded, mean_decoded = detect_anomalies(autoencoder_model, test_data)
+        plot_results(test_data, test_data, kmeans_clusters, gmm_clusters, weighted_mean_encoded, mean_decoded, MODE_OUTPUT_FOLDER)
+        print("Anomaly detection completed. Results saved.")
+    else:
+        print("Invalid mode. Choose 'train' or 'detect'.")
